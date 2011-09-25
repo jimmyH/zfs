@@ -36,11 +36,6 @@
 static sa_fstype_t *nfs_fstype;
 static boolean_t nfs_available;
 
-/* nfs_exportfs_temp_fd refers to a temporary copy of the output 
- * from exportfs -v.
- */
-static int nfs_exportfs_temp_fd = -1;
-
 typedef int (*nfs_shareopt_callback_t)(const char *opt, const char *value,
     void *cookie);
 
@@ -504,19 +499,32 @@ is_share_active(sa_share_impl_t impl_share)
 	char line[512];
 	char *tab, *cur;
 
-	FILE *nfs_exportfs_temp_fp;
+	int rc;
+	int etab_lock_fd;
+	struct flock etab_lock = { F_RDLCK, SEEK_SET, 0, 0, 0 };
+	FILE *etab_fp;
 
-	if (nfs_exportfs_temp_fd < 0)
+	if (-1 == (etab_lock_fd = open("/var/lib/nfs/.etab.lock", O_RDONLY|O_CREAT, 0600)))
 		return B_FALSE;
 
-	nfs_exportfs_temp_fp = fdopen(dup(nfs_exportfs_temp_fd), "r");
+	rc = fcntl(etab_lock_fd, F_SETLKW, &etab_lock);
 
-	if (!nfs_exportfs_temp_fp || -1==fseek(nfs_exportfs_temp_fp, 0, SEEK_SET)) {
-		fclose(nfs_exportfs_temp_fp);
+	while (rc < 0 && errno == EINTR) {
+		rc = fcntl(etab_lock_fd, F_SETLKW, &etab_lock);
+	}
+
+	if (rc < 0) {
+		close(etab_lock_fd);
 		return B_FALSE;
 	}
 
-	while (fgets(line, sizeof(line), nfs_exportfs_temp_fp) != NULL) {
+	if (NULL == (etab_fp = fopen("/var/lib/nfs/etab", "r"))) {
+		close(etab_lock_fd);
+		return B_FALSE;
+	}
+
+
+	while (fgets(line, sizeof(line), etab_fp) != NULL) {
 		/*
 		 * exportfs uses separate lines for the share path
 		 * and the export options when the share path is longer
@@ -547,12 +555,14 @@ is_share_active(sa_share_impl_t impl_share)
 			*cur-- = '\0';
 
 		if (strcmp(line, impl_share->sharepath) == 0) {
-			fclose(nfs_exportfs_temp_fp);
+			fclose(etab_fp);
+			close(etab_lock_fd);
 			return B_TRUE;
 		}
 	}
 
-	fclose(nfs_exportfs_temp_fp);
+	fclose(etab_fp);
+	close(etab_lock_fd);
 	return B_FALSE;
 }
 
@@ -610,52 +620,11 @@ static const sa_share_ops_t nfs_shareops = {
 	.clear_shareopts = nfs_clear_shareopts,
 };
 
-/* nfs_check_exportfs() checks that the exportfs command runs
- * and also maintains a temporary copy of the output from
- * exportfs -v.
- * To update this temporary copy simply call this function again.
- *
- * TODO : Use /var/lib/nfs/etab instead of our private copy.
- *        But must implement locking to prevent concurrent access.
- *
- * TODO : The temporary file descriptor is never closed since 
- *        there is no libshare_nfs_fini() function.
- */
 static int
 nfs_check_exportfs(void)
 {
 	pid_t pid;
-	int rc, rc2, status;
-	int pipes[2];
-	FILE *exportfs_stdout;
-	char line[512];
-	static char nfs_exportfs_tempfile[] = "/tmp/exportfs.XXXXXX";
-	FILE *nfs_exportfs_temp_fp;
-
-	/* Close any existing temporary copies of output from exportfs.
-	 * We have already called unlink() so file will be deleted.
-	 */
-	if (nfs_exportfs_temp_fd >= 0) {
-		close(nfs_exportfs_temp_fd);
-		nfs_exportfs_temp_fd = -1; 
-	}
-
-	nfs_exportfs_temp_fd = mkstemp(nfs_exportfs_tempfile);
-
-	if (nfs_exportfs_temp_fd < 0)
-		return SA_SYSTEM_ERR;
-
-	unlink(nfs_exportfs_tempfile);
-
-	fcntl(nfs_exportfs_temp_fd, F_SETFD, FD_CLOEXEC);
-
-	nfs_exportfs_temp_fp = fdopen(dup(nfs_exportfs_temp_fd), "w");
-
-	if (nfs_exportfs_temp_fp == NULL)
-		return SA_SYSTEM_ERR;
-
-	if (pipe(pipes) < 0)
-		return SA_SYSTEM_ERR;
+	int rc, status, null_fd;
 
 	pid = fork();
 
@@ -663,26 +632,10 @@ nfs_check_exportfs(void)
 		return SA_SYSTEM_ERR;
 
 	if (pid > 0) {
-		exportfs_stdout = fdopen(pipes[0], "r");
-		close(pipes[1]);
-
-		rc2 = 0;
-
-		while (fgets(line, sizeof(line), exportfs_stdout) != NULL) {
-			rc2 = fputs(line,nfs_exportfs_temp_fp);
-		}
-
-		if (rc2 >= 0)
-			rc2 = fclose(nfs_exportfs_temp_fp);
-		else
-			fclose(nfs_exportfs_temp_fp);
-
-		fclose(exportfs_stdout);
-
 		while ((rc = waitpid(pid, &status, 0)) <= 0 && errno == EINTR)
 			; /* empty loop body */
 
-		if (rc <= 0 || rc2 < 0 )
+		if (rc <= 0)
 			return SA_SYSTEM_ERR;
 
 		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
@@ -693,14 +646,14 @@ nfs_check_exportfs(void)
 
 	/* child */
 
-	/* exportfs -v */
+	null_fd = open("/dev/null", O_RDONLY);
 
-	close(pipes[0]);
-
-	if (dup2(pipes[1], STDOUT_FILENO) < 0)
+	if (null_fd < 0 || dup2(null_fd, 1) < 0 || dup2(null_fd, 2) < 0)
 		exit(1);
 
-	rc = execlp("/usr/sbin/exportfs", "exportfs", "-v", NULL);
+	close(null_fd);
+
+	rc = execlp("/usr/sbin/exportfs", "exportfs", NULL);
 
 	if (rc < 0) {
 		exit(1);
