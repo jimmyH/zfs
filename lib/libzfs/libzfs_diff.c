@@ -45,7 +45,7 @@
 #include "libzfs_impl.h"
 
 #define	ZDIFF_SNAPDIR		"/.zfs/snapshot/"
-#define	ZDIFF_SHARESDIR 	"/.zfs/shares/"
+//#define	ZDIFF_SHARESDIR 	"/.zfs/shares/"
 #define	ZDIFF_PREFIX		"zfs-diff-%d"
 
 #define	ZDIFF_ADDED	'+'
@@ -76,7 +76,7 @@ typedef struct differ_info {
 	boolean_t scripted;
 	boolean_t classify;
 	boolean_t timestamped;
-	uint64_t shares;
+//	uint64_t shares;
 	int zerr;
 	int cleanupfd;
 	int outputfd;
@@ -263,8 +263,8 @@ write_inuse_diffs_one(FILE *fp, differ_info_t *di, uint64_t dobj)
 	int fobjerr, tobjerr;
 	int change;
 
-	if (dobj == di->shares)
-		return (0);
+//	if (dobj == di->shares)
+//		return (0);
 
 	/*
 	 * Check the from and to snapshots for info on the object. If
@@ -393,10 +393,10 @@ write_free_diffs(FILE *fp, differ_info_t *di, dmu_diff_record_t *dr)
 
 		err = ioctl(lhdl->libzfs_fd, ZFS_IOC_NEXT_OBJ, &zc);
 		if (err == 0) {
-			if (zc.zc_obj == di->shares) {
-				zc.zc_obj++;
-				continue;
-			}
+//			if (zc.zc_obj == di->shares) {
+//				zc.zc_obj++;
+//				continue;
+//			}
 			if (zc.zc_obj > dr->ddr_last) {
 				break;
 			}
@@ -484,24 +484,24 @@ differ(void *arg)
 	return ((void *)0);
 }
 
-static int
-find_shares_object(differ_info_t *di)
-{
-	char fullpath[MAXPATHLEN];
-	struct stat64 sb = { 0 };
-
-	(void) strlcpy(fullpath, di->dsmnt, MAXPATHLEN);
-	(void) strlcat(fullpath, ZDIFF_SHARESDIR, MAXPATHLEN);
-
-	if (stat64(fullpath, &sb) != 0) {
-		(void) snprintf(di->errbuf, sizeof (di->errbuf),
-		    dgettext(TEXT_DOMAIN, "Cannot stat %s"), fullpath);
-		return (zfs_error(di->zhp->zfs_hdl, EZFS_DIFF, di->errbuf));
-	}
-
-	di->shares = (uint64_t)sb.st_ino;
-	return (0);
-}
+//static int
+//find_shares_object(differ_info_t *di)
+//{
+//	char fullpath[MAXPATHLEN];
+//	struct stat64 sb = { 0 };
+//
+//	(void) strlcpy(fullpath, di->dsmnt, MAXPATHLEN);
+//	(void) strlcat(fullpath, ZDIFF_SHARESDIR, MAXPATHLEN);
+//
+//	if (stat64(fullpath, &sb) != 0) {
+//		(void) snprintf(di->errbuf, sizeof (di->errbuf),
+//		    dgettext(TEXT_DOMAIN, "Cannot stat %s"), fullpath);
+//		return (zfs_error(di->zhp->zfs_hdl, EZFS_DIFF, di->errbuf));
+//	}
+//
+//	di->shares = (uint64_t)sb.st_ino;
+//	return (0);
+//}
 
 static int
 make_temp_snapshot(differ_info_t *di)
@@ -739,8 +739,8 @@ setup_differ_info(zfs_handle_t *zhp, const char *fromsnap,
 	if (get_mountpoints(di) != 0)
 		return (-1);
 
-	if (find_shares_object(di) != 0)
-		return (-1);
+//	if (find_shares_object(di) != 0)
+//		return (-1);
 
 	return (0);
 }
