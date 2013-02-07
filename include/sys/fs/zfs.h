@@ -24,6 +24,7 @@
  * Copyright (c) 2012 by Delphix. All rights reserved.
  * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2012, Joyent, Inc. All rights reserved.
+ * Copyright (c) 2013 by Saso Kiselkov. All rights reserved.
  */
 
 /* Portions Copyright 2010 Robert Milkowski */
@@ -129,6 +130,7 @@ typedef enum {
 	ZFS_PROP_WRITTEN,
 	ZFS_PROP_CLONES,
 	ZFS_PROP_SNAPDEV,
+	ZFS_PROP_SECONDARYCACHECOMPRESS,
 	ZFS_NUM_PROPS
 } zfs_prop_t;
 
@@ -316,6 +318,13 @@ typedef enum zfs_cache_type {
 	ZFS_CACHE_METADATA = 1,
 	ZFS_CACHE_ALL = 2
 } zfs_cache_type_t;
+
+typedef enum zfs_cache_compress_type {
+	ZFS_CACHE_COMPRESS_NONE = 0,
+	ZFS_CACHE_COMPRESS_DATA = 1,
+	ZFS_CACHE_COMPRESS_METADATA = 2,
+	ZFS_CACHE_COMPRESS_ALL = 3
+} zfs_cache_compress_type_t;
 
 typedef enum {
 	ZFS_SYNC_STANDARD = 0,

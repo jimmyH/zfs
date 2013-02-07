@@ -480,6 +480,11 @@ extern zio_t *zio_read_phys(zio_t *pio, vdev_t *vd, uint64_t offset,
     zio_done_func_t *done, void *private, int priority, enum zio_flag flags,
     boolean_t labels);
 
+extern zio_t *zio_read_null(zio_t *pio, vdev_t *vd, uint64_t offset,
+    uint64_t size, void *data, int checksum,
+    zio_done_func_t *done, void *private, int priority, enum zio_flag flags,
+    boolean_t labels);
+
 extern zio_t *zio_write_phys(zio_t *pio, vdev_t *vd, uint64_t offset,
     uint64_t size, void *data, int checksum,
     zio_done_func_t *done, void *private, int priority, enum zio_flag flags,
