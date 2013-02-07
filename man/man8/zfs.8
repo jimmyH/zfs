@@ -1008,6 +1008,32 @@ Controls what is cached in the secondary cache (L2ARC). If this property is set 
 .ne 2
 .mk
 .na
+\fB\fBsecondarycachecompress\fR=\fBnone\fR | \fBall\fR | \fBmetadata\fR | \fBdata\fR\fR
+.ad
+.sp .6
+.RS 4n
+Controls compression of data on L2ARC devices. The default value is
+\fBnone\fR, which means that no compression is requested for any data
+when it enters the L2ARC. When set to \fBall\fR, all data from this
+dataset is compressed when put into L2ARC and decompressed on cache hit.
+When set to \fBmetadata\fR, only metadata is compressed and conversely
+when set to \fBdata\fR, only user data is compressed. When multiple
+datasets with different values for \fBsecondarycachecompress\fR
+reference the same data in ARC, the data is compressed if at least one
+dataset requests it (i.e. compression is preferred).
+
+Buffers smaller than 2048 bytes (or 4096 bytes when using L2ARC devices
+with 4k sectors) or buffers that cannot be compressed by at least 12.5%
+will be stored uncompressed and thus do not incur any performance
+penalty on cache hits. Please note that this means buffers from datasets
+with a \fBrecordsize\fR smaller than or equal to this limit cannot be
+compressed in L2ARC.
+.RE
+
+.sp
+.ne 2
+.mk
+.na
 \fB\fBsetuid\fR=\fBon\fR | \fBoff\fR\fR
 .ad
 .sp .6
