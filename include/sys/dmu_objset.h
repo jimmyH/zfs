@@ -20,6 +20,7 @@
  */
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013 by Saso Kiselkov. All rights reserved.
  */
 
 /* Portions Copyright 2010 Robert Milkowski */
@@ -90,6 +91,7 @@ struct objset {
 	uint8_t os_logbias;
 	uint8_t os_primary_cache;
 	uint8_t os_secondary_cache;
+	uint8_t os_secondary_cache_compress;	/* L2 compression */
 	uint8_t os_sync;
 
 	/* no lock needed: */
@@ -128,6 +130,11 @@ struct objset {
 #define	DMU_OS_IS_L2CACHEABLE(os)				\
 	((os)->os_secondary_cache == ZFS_CACHE_ALL ||		\
 	(os)->os_secondary_cache == ZFS_CACHE_METADATA)
+
+#define	DMU_OS_IS_L2COMPRESSIBLE(os)					\
+	((os)->os_secondary_cache_compress == ZFS_CACHE_COMPRESS_ALL ||	\
+	(os)->os_secondary_cache_compress == ZFS_CACHE_COMPRESS_DATA ||	\
+	(os)->os_secondary_cache_compress == ZFS_CACHE_COMPRESS_METADATA)
 
 /* called from zpl */
 int dmu_objset_hold(const char *name, void *tag, objset_t **osp);

@@ -22,6 +22,7 @@
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2012 by Delphix. All rights reserved.
  * Copyright (c) 2011 Nexenta Systems, Inc. All rights reserved.
+ * Copyright (c) 2013 Saso Kiselkov. All rights reserved.
  */
 
 #include <sys/zfs_context.h>
@@ -864,6 +865,35 @@ zio_read_phys(zio_t *pio, vdev_t *vd, uint64_t offset, uint64_t size,
 	zio = zio_create(pio, vd->vdev_spa, 0, NULL, data, size, done, private,
 	    ZIO_TYPE_READ, priority, flags, vd, offset, NULL,
 	    ZIO_STAGE_OPEN, ZIO_READ_PHYS_PIPELINE);
+
+	zio->io_prop.zp_checksum = checksum;
+
+	return (zio);
+}
+
+/*
+ * Similar to zio_read_phys, but instead of issuing a real zio, this just
+ * issues a null read IO. This is used in l2arc reading which might
+ * occasionally want to do a null read (when compression reduced a buffer
+ * to zero size), but then for some inconcievable reason needs to redo the
+ * read to the main pool (which recycles some of the data from the original
+ * read io).
+ */
+zio_t *
+zio_read_null(zio_t *pio, vdev_t *vd, uint64_t offset, uint64_t size,
+    void *data, int checksum, zio_done_func_t *done, void *private,
+    int priority, enum zio_flag flags, boolean_t labels)
+{
+	zio_t *zio;
+
+	ASSERT(vd->vdev_children == 0);
+	ASSERT(!labels || offset + size <= VDEV_LABEL_START_SIZE ||
+	    offset >= vd->vdev_psize - VDEV_LABEL_END_SIZE);
+	ASSERT3U(offset + size, <=, vd->vdev_psize);
+
+	zio = zio_create(pio, vd->vdev_spa, 0, NULL, data, size, done, private,
+	    ZIO_TYPE_NULL, priority, flags, vd, offset, NULL,
+	    ZIO_STAGE_OPEN, ZIO_INTERLOCK_PIPELINE);
 
 	zio->io_prop.zp_checksum = checksum;
 
