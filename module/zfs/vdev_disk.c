@@ -35,6 +35,7 @@
 
 char *zfs_vdev_scheduler = VDEV_SCHEDULER;
 static void *zfs_vdev_holder = VDEV_HOLDER;
+static uint zfs_james_hack = 0;
 
 /*
  * Virtual device vector for disks.
@@ -582,9 +583,9 @@ retry:
 	 * On synchronous blocking requests we wait for all bio the completion
 	 * callbacks to run.  We will be woken when the last callback runs
 	 * for this dio.  We are responsible for putting the last dio_request
-	 * reference will in turn put back the last bio references.  The
-	 * only synchronous consumer is vdev_disk_read_rootlabel() all other
-	 * IO originating from vdev_disk_io_start() is asynchronous.
+	 * reference will in turn put back the last bio references.
+	 * Synchronous consumers are all reads and vdev_disk_read_rootlabel(),
+	 * all other IO originating from vdev_disk_io_start() is asynchronous.
 	 */
 	if (vdev_disk_dio_is_sync(dr)) {
 		wait_for_completion(&dr->dr_comp);
@@ -693,7 +694,7 @@ vdev_disk_io_start(zio_t *zio)
 		break;
 
 	case ZIO_TYPE_READ:
-		flags = READ;
+		if (zfs_james_hack) flags = READ; else flags = READ_SYNC;
 		break;
 
 	default:
@@ -838,3 +839,6 @@ vdev_disk_read_rootlabel(char *devpath, char *devid, nvlist_t **config)
 
 module_param(zfs_vdev_scheduler, charp, 0644);
 MODULE_PARM_DESC(zfs_vdev_scheduler, "I/O scheduler");
+module_param(zfs_james_hack, uint, 0644);
+MODULE_PARM_DESC(zfs_james_hack, "Set to 0 to use READ_SYNC, Set to 1 to use READ");
+
