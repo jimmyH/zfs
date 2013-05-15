@@ -638,7 +638,8 @@ unsigned long l2arc_write_boost = L2ARC_WRITE_SIZE;	/* extra warmup write */
 unsigned long l2arc_headroom = L2ARC_HEADROOM;		/* # of dev writes */
 unsigned long l2arc_feed_secs = L2ARC_FEED_SECS;	/* interval seconds */
 unsigned long l2arc_feed_min_ms = L2ARC_FEED_MIN_MS;	/* min interval msecs */
-int l2arc_noprefetch = B_TRUE;			/* don't cache prefetch bufs */
+int l2arc_noprefetch = B_TRUE;			/* don't cache prefetch data bufs */
+int l2arc_noprefetch_metadata = B_TRUE;		/* don't cache prefetch metadata bufs */
 int l2arc_feed_again = B_TRUE;			/* turbo warmup */
 int l2arc_norw = B_TRUE;			/* no reads during writes */
 
@@ -2793,7 +2794,10 @@ arc_read_done(zio_t *zio)
 	    (found == hdr && HDR_L2_READING(hdr)));
 
 	hdr->b_flags &= ~ARC_L2_EVICTED;
-	if (l2arc_noprefetch && (hdr->b_flags & ARC_PREFETCH))
+
+	if (HDR_PREFETCH(hdr) && (
+	    (l2arc_noprefetch && (hdr->b_type == ARC_BUFC_DATA)) ||
+	    (l2arc_noprefetch_metadata && (hdr->b_type == ARC_BUFC_METADATA))))
 		hdr->b_flags &= ~ARC_L2CACHE;
 
 	/* byteswap if necessary */
@@ -3128,7 +3132,9 @@ top:
 			 */
 			if (hdr->b_l2hdr != NULL &&
 			    !HDR_L2_WRITING(hdr) && !HDR_L2_EVICTED(hdr) &&
-			    !(l2arc_noprefetch && HDR_PREFETCH(hdr))) {
+			    !(HDR_PREFETCH(hdr) && (
+				(l2arc_noprefetch && (hdr->b_type == ARC_BUFC_DATA)) ||
+				(l2arc_noprefetch_metadata && (hdr->b_type == ARC_BUFC_METADATA))))) {
 				l2arc_read_callback_t *cb;
 
 				DTRACE_PROBE1(l2arc__hit, arc_buf_hdr_t *, hdr);
@@ -5067,8 +5073,11 @@ MODULE_PARM_DESC(l2arc_feed_secs, "Seconds between L2ARC writing");
 module_param(l2arc_feed_min_ms, ulong, 0444);
 MODULE_PARM_DESC(l2arc_feed_min_ms, "Min feed interval in milliseconds");
 
-module_param(l2arc_noprefetch, int, 0444);
-MODULE_PARM_DESC(l2arc_noprefetch, "Skip caching prefetched buffers");
+module_param(l2arc_noprefetch, int, 0644);
+MODULE_PARM_DESC(l2arc_noprefetch, "Skip caching prefetched data buffers");
+
+module_param(l2arc_noprefetch_metadata, int, 0644);
+MODULE_PARM_DESC(l2arc_noprefetch_metadata, "Skip caching prefetched metadata buffers");
 
 module_param(l2arc_feed_again, int, 0444);
 MODULE_PARM_DESC(l2arc_feed_again, "Turbo L2ARC warmup");
