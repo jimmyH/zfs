@@ -694,6 +694,9 @@ typedef struct l2arc_read_callback {
 	zbookmark_t		l2rcb_zb;		/* original bookmark */
 	int			l2rcb_flags;		/* original flags */
 	enum zio_compress	l2rcb_compress;		/* applied compress */
+	uint64_t			l2rcb_pack_asize;	/* packing... */
+	int			l2rcb_pack_offset;	/* packing... */
+	void*			l2rcb_pack_data;	/* packing... */
 } l2arc_read_callback_t;
 
 typedef struct l2arc_write_callback {
@@ -711,6 +714,12 @@ struct l2arc_buf_hdr {
 	int			b_asize;
 	/* temporary buffer holder for in-flight compressed data */
 	void			*b_tmp_cdata;
+        /* temporary buffer for in-flight packed data.
+           I would have thought that putting this here is a very bad idea
+           since it would increase the overall size of the l2arc headers.
+           But surely the same argument could be made for b_tmp_cdata??
+	*/
+	void			*b_tmp_pdata;
 };
 
 typedef struct l2arc_data_free {
@@ -3140,6 +3149,9 @@ top:
 				cb->l2rcb_zb = *zb;
 				cb->l2rcb_flags = zio_flags;
 				cb->l2rcb_compress = hdr->b_l2hdr->b_compress;
+				cb->l2rcb_pack_asize = hdr->b_l2hdr->b_asize;
+				cb->l2rcb_pack_offset = 0;
+				cb->l2rcb_pack_data = NULL;
 
 				/*
 				 * l2arc read.  The SCL_L2ARC lock will be
@@ -3155,7 +3167,25 @@ top:
 					    ZIO_FLAG_CANFAIL |
 					    ZIO_FLAG_DONT_PROPAGATE |
 					    ZIO_FLAG_DONT_RETRY);
-				} else {
+					} else {
+					// buf is allocated for size bytes,
+					// when packing is involved we need to read 
+					// a whole block.
+					uint64_t blocksize =  1 << vd->vdev_ashift;
+					cb->l2rcb_pack_offset = addr % blocksize;
+					if ( cb->l2rcb_pack_offset ) {
+						// This is a packed, non-aligned, block.
+						ASSERT(hdr->b_l2hdr->b_asize <= blocksize);
+						cb->l2rcb_pack_data = zio_data_buf_alloc(blocksize);
+						rzio = zio_read_phys(pio, vd, addr & ~(blocksize-1),
+						    blocksize,
+						    cb->l2rcb_pack_data, ZIO_CHECKSUM_OFF,
+						    l2arc_read_done, cb, priority,
+						    zio_flags | ZIO_FLAG_DONT_CACHE |
+						    ZIO_FLAG_CANFAIL |
+						    ZIO_FLAG_DONT_PROPAGATE |
+						    ZIO_FLAG_DONT_RETRY, B_FALSE);
+					} else {
 					rzio = zio_read_phys(pio, vd, addr,
 					    hdr->b_l2hdr->b_asize,
 					    buf->b_data, ZIO_CHECKSUM_OFF,
@@ -3164,6 +3194,7 @@ top:
 					    ZIO_FLAG_CANFAIL |
 					    ZIO_FLAG_DONT_PROPAGATE |
 					    ZIO_FLAG_DONT_RETRY, B_FALSE);
+					}
 				}
 				DTRACE_PROBE2(l2arc__read, vdev_t *, vd,
 				    zio_t *, rzio);
@@ -4340,6 +4371,7 @@ l2arc_write_done(zio_t *zio)
 			 * left set, denying reads to this buffer.
 			 */
 			ARCSTAT_BUMP(arcstat_l2_writes_hdr_miss);
+			// TODO : Is this a possible  memory leak for b_tmp_cdata ???
 			continue;
 		}
 
@@ -4350,6 +4382,9 @@ l2arc_write_done(zio_t *zio)
 		 */
 		if (abl2->b_compress != ZIO_COMPRESS_OFF)
 			l2arc_release_cdata_buf(ab);
+
+		// At the moment we are using b_tmp_pdata for packing small buffers
+		if (abl2->b_tmp_pdata) { zio_data_buf_free(abl2->b_tmp_pdata, 1 << dev->l2ad_vdev->vdev_ashift);  abl2->b_tmp_pdata=NULL; }
 
 		if (zio->io_error != 0) {
 			/*
@@ -4408,6 +4443,16 @@ l2arc_read_done(zio_t *zio)
 	mutex_enter(hash_lock);
 	hdr = buf->b_hdr;
 	ASSERT3P(hash_lock, ==, HDR_LOCK(hdr));
+
+	// If the buffer was packed, unpack it first
+	if (cb->l2rcb_pack_data)
+	{
+		memcpy(buf->b_data,(char*)cb->l2rcb_pack_data+cb->l2rcb_pack_offset,cb->l2rcb_pack_asize);
+		zio_data_buf_free(cb->l2rcb_pack_data, 1 << zio->io_vd->vdev_ashift); 
+		cb->l2rcb_pack_data = 0;
+        	zio->io_orig_size = zio->io_size = cb->l2rcb_pack_asize;
+		zio->io_data = zio->io_orig_data = buf->b_data;
+        }
 
 	/*
 	 * If the buffer was compressed, decompress it first.
@@ -4660,6 +4705,11 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz,
 	uint64_t guid = spa_load_guid(spa);
 	int try;
 	const boolean_t do_headroom_boost = *headroom_boost;
+	// These variables keep track of the 'packing' buffers
+	uint64_t pdata_b_daddr = 0;
+	void* pdata_buf_data = NULL;
+	uint64_t pdata_buf_sz = 0;
+	uint64_t pdata_buf_max = (dev->l2ad_vdev)?(1 << dev->l2ad_vdev->vdev_ashift):0;
 
 	ASSERT(dev->l2ad_vdev != NULL);
 
@@ -4676,7 +4726,8 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz,
 	 * We will want to try to compress buffers that are at least 2x the
 	 * device sector size.
 	 */
-	buf_compress_minsz = 2 << dev->l2ad_vdev->vdev_ashift;
+	//buf_compress_minsz = 2 << dev->l2ad_vdev->vdev_ashift;
+	buf_compress_minsz = 0;
 
 	/*
 	 * Copy buffers for L2ARC writing.
@@ -4814,6 +4865,7 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz,
 	 * and work backwards, retracing the course of the buffer selector
 	 * loop above.
 	 */
+
 	for (ab = list_prev(dev->l2ad_buflist, head); ab;
 	    ab = list_prev(dev->l2ad_buflist, ab)) {
 		l2arc_buf_hdr_t *l2hdr;
@@ -4826,7 +4878,7 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz,
 		 * ab->b_buf may be invalid by now due to ARC eviction.
 		 */
 		l2hdr = ab->b_l2hdr;
-		l2hdr->b_daddr = dev->l2ad_hand;
+		//l2hdr->b_daddr = dev->l2ad_hand;
 
 		if (!l2arc_nocompress && (ab->b_flags & ARC_L2COMPRESS) &&
 		    l2hdr->b_asize >= buf_compress_minsz) {
@@ -4846,9 +4898,46 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz,
 		buf_data = l2hdr->b_tmp_cdata;
 		buf_sz = l2hdr->b_asize;
 
+		// We use this bit of the l2arc headers to keep track of packed data buffers
+		l2hdr->b_tmp_pdata = NULL;
+
 		/* Compression may have squashed the buffer to zero length. */
-		if (buf_sz != 0) {
+                if (buf_sz == 0) {
+			l2hdr->b_daddr = dev->l2ad_hand;
+		} else if ( buf_sz < pdata_buf_max/2 ) {
+  			// This block is a candidate for our small block packing algorithm
+			if ( pdata_buf_data && ( pdata_buf_sz + buf_sz > pdata_buf_max )) {
+				// not enough space, send the packed block.
+				wzio = zio_write_phys(pio, dev->l2ad_vdev,
+				    pdata_b_daddr, pdata_buf_sz, pdata_buf_data, ZIO_CHECKSUM_OFF,
+				    NULL, NULL, ZIO_PRIORITY_ASYNC_WRITE,
+				    ZIO_FLAG_CANFAIL, B_FALSE);
+	
+				DTRACE_PROBE2(l2arc__write, vdev_t *, dev->l2ad_vdev,
+				    zio_t *, wzio);
+				(void) zio_nowait(wzio);
+	
+				write_asize += pdata_buf_sz;
+
+				pdata_buf_data = 0;
+			}
+			if ( !pdata_buf_data ) {
+				// Allocate a new pdata_buf
+				pdata_buf_data = zio_data_buf_alloc(pdata_buf_max);
+				pdata_buf_sz = 0;
+				pdata_b_daddr = dev->l2ad_hand;
+				write_psize += pdata_buf_max;
+				dev->l2ad_hand += pdata_buf_max;
+				// new pdata_buf - so the current l2hdr takes ownership of it
+				l2hdr->b_tmp_pdata = pdata_buf_data;
+			}
+  			// copy our block into the packing buffer
+  			memcpy((char*)pdata_buf_data+pdata_buf_sz,buf_data,buf_sz);
+                        l2hdr->b_daddr = pdata_b_daddr + pdata_buf_sz;
+  			pdata_buf_sz += buf_sz;
+		} else {
 			uint64_t buf_p_sz;
+			l2hdr->b_daddr = dev->l2ad_hand;
 
 			wzio = zio_write_phys(pio, dev->l2ad_vdev,
 			    dev->l2ad_hand, buf_sz, buf_data, ZIO_CHECKSUM_OFF,
@@ -4867,6 +4956,22 @@ l2arc_write_buffers(spa_t *spa, l2arc_dev_t *dev, uint64_t target_sz,
 			write_psize += buf_p_sz;
 			dev->l2ad_hand += buf_p_sz;
 		}
+	}
+
+	if ( pdata_buf_data) {
+		// have a packed buffer needing sending
+		wzio = zio_write_phys(pio, dev->l2ad_vdev,
+		    pdata_b_daddr, pdata_buf_sz, pdata_buf_data, ZIO_CHECKSUM_OFF,
+		    NULL, NULL, ZIO_PRIORITY_ASYNC_WRITE,
+		    ZIO_FLAG_CANFAIL, B_FALSE);
+
+		DTRACE_PROBE2(l2arc__write, vdev_t *, dev->l2ad_vdev,
+		    zio_t *, wzio);
+		(void) zio_nowait(wzio);
+
+		write_asize += pdata_buf_sz;
+
+		pdata_buf_data = 0;
 	}
 
 	mutex_exit(&l2arc_buflist_mtx);
@@ -4928,7 +5033,7 @@ l2arc_compress_buf(l2arc_buf_hdr_t *l2hdr)
 	len = l2hdr->b_asize;
 	cdata = zio_data_buf_alloc(len);
 	csize = zio_compress_data(ZIO_COMPRESS_LZ4, l2hdr->b_tmp_cdata,
-	    cdata, l2hdr->b_asize);
+	    cdata, l2hdr->b_asize,0);
 
 	if (csize == 0) {
 		/* zero block, indicate that there's nothing to write */
